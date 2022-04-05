@@ -47,7 +47,7 @@ class CarlaEnv(gym.Env):
     self.max_ego_spawn_times = params['max_ego_spawn_times']
     self.display_route = params['display_route']
     self.town = params['town']
-    self.use_fixed = params['use_fixed']
+    self.routes = params['routes']
     self.weather = params['weather']
     if 'pixor' in params.keys():
       self.pixor = params['pixor']
@@ -88,13 +88,11 @@ class CarlaEnv(gym.Env):
         })
     self.observation_space = spaces.Dict(observation_space_dict)
 
-    #adding fixed routes
+    #adding fixed routes FIX THIS
 
-    self.routes_dict = {'Town04':{'E':[0,301,334,120,75,51],
-                                'M':[191,131,197,210,371,348,141,320],
-                                'H':[251,161,264,234,167,182]
-                                }
-                    }
+    self.routes_dict = self.routes
+
+    self.use_fixed = 'H'
 
 
     # Connect to carla server and get world object
@@ -111,7 +109,6 @@ class CarlaEnv(gym.Env):
 
     # Get spawn points
     self.vehicle_spawn_points = list(self.world.get_map().get_spawn_points())
-    print(len(self.vehicle_spawn_points))
     self.walker_spawn_points = []
     for i in range(self.number_of_walkers):
       spawn_point = carla.Transform()
@@ -138,27 +135,27 @@ class CarlaEnv(gym.Env):
 
     # Camera sensor
     self.camera_img = np.zeros((self.obs_size, self.obs_size, 3), dtype=np.uint8)
-    self.camera_trans = carla.Transform(carla.Location(x=0.8, z=1.7))
+    self.camera_trans = carla.Transform(carla.Location(x=2.5,z=1),carla.Rotation(pitch=-25))
     self.camera_bp = self.world.get_blueprint_library().find('sensor.camera.rgb')
     # Modify the attributes of the blueprint to set image resolution and field of view.
     self.camera_bp.set_attribute('image_size_x', str(self.obs_size))
     self.camera_bp.set_attribute('image_size_y', str(self.obs_size))
-    self.camera_bp.set_attribute('fov', '110')
+    self.camera_bp.set_attribute('fov', '90')
     # Set the time in seconds between sensor captures
     self.camera_bp.set_attribute('sensor_tick', '0.02')
 
     # Semantic Camera Sensor (same as RGB)
     self.sem_img = np.zeros((self.obs_size, self.obs_size, 3), dtype=np.uint8)
     self.sem_dis_img = np.zeros((self.obs_size, self.obs_size, 3), dtype=np.uint8)
-    self.semantic_trans = carla.Transform(carla.Location(x=0.8, z=1.7))
+    self.semantic_trans = carla.Transform(carla.Location(x=2.5,z=1),carla.Rotation(pitch=-25))
     self.seg_camera_bp = self.world.get_blueprint_library().find('sensor.camera.semantic_segmentation')
     # Modify the attributes of the blueprint to set image resolution and field of view.
     self.seg_camera_bp.set_attribute('image_size_x', str(self.obs_size))
     self.seg_camera_bp.set_attribute('image_size_y', str(self.obs_size))
-    self.seg_camera_bp.set_attribute('fov', '110')
+    self.seg_camera_bp.set_attribute('fov', '90')
     # Set the time in seconds between sensor captures
     self.seg_camera_bp.set_attribute('sensor_tick', '0.02')
-
+    self.collect_data = params['Collect_Data']
 
     # Set fixed simulation step for synchronous mode
     self.settings = self.world.get_settings()
@@ -232,8 +229,9 @@ class CarlaEnv(gym.Env):
     self.walker_polygons.append(walker_poly_dict)
 
     #check position of idx in routes list and if bigger than length of fixed list reset to 0
-    if self.use_fixed != False and self.route_idx > len(self.routes_dict[self.town][self.use_fixed])-1:
-        self.route_idx = 0
+    if self.routes:
+      if self.use_fixed != False and self.route_idx > len(self.routes_dict[self.town][self.use_fixed])-1:
+          self.route_idx = 0
 
     # Spawn the ego vehicle
     ego_spawn_times = 0
@@ -241,7 +239,7 @@ class CarlaEnv(gym.Env):
       if ego_spawn_times > self.max_ego_spawn_times:
         self.reset()
       
-      if self.use_fixed != False:
+      if self.routes:
           routes = self.routes_dict[self.town][self.use_fixed]
           route_start = routes[self.route_idx]
           transform = self.ego_spawn_points[route_start]
@@ -327,7 +325,7 @@ class CarlaEnv(gym.Env):
     # Add set Routes
 
     self.routeplanner = RoutePlanner(self.ego, self.max_waypt)
-    self.waypoints, _, self.vehicle_front = self.routeplanner.run_step()
+    self.waypoints, _, self.vehicle_front, self.waypoint_queue = self.routeplanner.run_step()
 
     # Set ego information for render
     self.birdeye_render.set_hero(self.ego, self.ego.id)
@@ -336,30 +334,32 @@ class CarlaEnv(gym.Env):
   
   def step(self, action):
     # Calculate acceleration and steering
-    if self.discrete:
-      # remove acc discrete space
-      # acc = self.discrete_act[0][action//self.n_steer]
-      steer = self.discrete_act[1][action%self.n_steer]
+    if self.collect_data == False:
+      if self.discrete:
+        # remove acc discrete space
+        # acc = self.discrete_act[0][action//self.n_steer]
+        steer = self.discrete_act[1][action%self.n_steer]
+      else:
+        acc = action[0]
+        steer = action[1]
+      
+      #Ronan: Get speed of car and use as reference acc or breaking
+      
+      v = self.ego.get_velocity()
+      speed = np.sqrt(v.x**2 + v.y**2)
+
+      # Convert acceleration to throttle and brake
+
+      if speed < self.desired_speed:
+        throttle = self.ego.get_control().throttle + 0.5*(1-(speed/self.desired_speed))
+        brake = 0
+      else:
+        throttle = 0
+        brake = self.ego.get_control().brake + 0.02
+
+      act = carla.VehicleControl(throttle = float(throttle),steer=float(-steer),brake=float(brake))
     else:
-      acc = action[0]
-      steer = action[1]
-    
-    #Ronan: Get speed of car and use as reference acc or breaking
-    
-    v = self.ego.get_velocity()
-    speed = np.sqrt(v.x**2 + v.y**2)
-
-    # Convert acceleration to throttle and brake
-
-    if speed < self.desired_speed:
-      throttle = self.ego.get_control().throttle + 0.5*(1-(speed/self.desired_speed))
-      brake = 0
-    else:
-      throttle = 0
-      brake = self.ego.get_control().brake + 0.02
-
-    # Apply control
-    act = carla.VehicleControl(throttle = float(throttle),steer=float(-steer),brake=float(brake))
+      act = action
     self.ego.apply_control(act)
 
     self.world.tick()
@@ -375,7 +375,7 @@ class CarlaEnv(gym.Env):
       self.walker_polygons.pop(0)
 
     # route planner
-    self.waypoints, _, self.vehicle_front = self.routeplanner.run_step()
+    self.waypoints, _, self.vehicle_front, self.waypoint_queue= self.routeplanner.run_step()
 
     # state information
     angular_velocity = self.ego.get_angular_velocity()
@@ -480,6 +480,7 @@ class CarlaEnv(gym.Env):
     if walker_bp.has_attribute('is_invincible'):
       walker_bp.set_attribute('is_invincible', 'false')
     walker_actor = self.world.try_spawn_actor(walker_bp, transform)
+    self.actor_list.append(walker_actor)
 
     if walker_actor is not None:
       walker_controller_bp = self.world.get_blueprint_library().find('controller.ai.walker')
@@ -490,7 +491,6 @@ class CarlaEnv(gym.Env):
       walker_controller_actor.go_to_location(self.world.get_random_location_from_navigation())
       # random max speed
       walker_controller_actor.set_max_speed(1 + random.random())    # max speed between 1 and 2 (default is 1.4 m/s)
-      self.actor_list.append(walker_actor)
       self.actor_list.append(walker_controller_actor)
       return True
     return False
@@ -517,6 +517,7 @@ class CarlaEnv(gym.Env):
 
     if not overlap:
       vehicle = self.world.try_spawn_actor(self.ego_bp, transform)
+      self.actor_list.append(vehicle)
 
     if vehicle is not None:
       self.ego=vehicle
@@ -554,8 +555,12 @@ class CarlaEnv(gym.Env):
       actor_poly_dict[actor.id]=poly
     return actor_poly_dict
 
+
+
   def _get_obs(self):
     """Get the observations."""
+
+    '''
     ## Birdeye rendering
     self.birdeye_render.vehicle_polygons = self.vehicle_polygons
     self.birdeye_render.walker_polygons = self.walker_polygons
@@ -589,41 +594,10 @@ class CarlaEnv(gym.Env):
     birdeye_surface = rgb_to_display_surface(birdeye, self.display_size)
     self.display.blit(birdeye_surface, (0, 0))
 
-    ## Lidar image generation
-    point_cloud = []
-    # Get point cloud data
-    for location in self.lidar_data:
-      point_cloud.append([location.point.x, location.point.y, -location.point.z])
-    point_cloud = np.array(point_cloud)
-    # Separate the 3D space to bins for point cloud, x and y is set according to self.lidar_bin,
-    # and z is set to be two bins.
-    y_bins = np.arange(-(self.obs_range - self.d_behind), self.d_behind+self.lidar_bin, self.lidar_bin)
-    x_bins = np.arange(-self.obs_range/2, self.obs_range/2+self.lidar_bin, self.lidar_bin)
-    z_bins = [-self.lidar_height-1, -self.lidar_height+0.25, 1]
-    # Get lidar image according to the bins
-    lidar, _ = np.histogramdd(point_cloud, bins=(x_bins, y_bins, z_bins))
-    lidar[:,:,0] = np.array(lidar[:,:,0]>0, dtype=np.uint8)
-    lidar[:,:,1] = np.array(lidar[:,:,1]>0, dtype=np.uint8)
-    # Add the waypoints to lidar image
-    if self.display_route:
-      wayptimg = (birdeye[:,:,0] <= 10) * (birdeye[:,:,1] <= 10) * (birdeye[:,:,2] >= 240)
-    else:
-      wayptimg = birdeye[:,:,0] < 0  # Equal to a zero matrix
-    wayptimg = np.expand_dims(wayptimg, axis=2)
-    wayptimg = np.fliplr(np.rot90(wayptimg, 3))
-
-    # Get the final lidar image
-    #lidar = np.concatenate((lidar, wayptimg), axis=2)
-    #lidar = np.flip(lidar, axis=1)
-    #lidar = np.rot90(lidar, 1)
-    #lidar = lidar * 255
-
-    # Display lidar image
-    #lidar_surface = rgb_to_display_surface(lidar, self.display_size)
-    #self.display.blit(lidar_surface, (self.display_size, 0))
     
     #add semantic display instead of Lidar
-    semantic = resize(self.sem_img, (self.obs_size, self.obs_size))*255
+    self.dis_semantic,_ = perception(self.sem_img) 
+    semantic = resize(genenerate_self.dis_semantic, (self.obs_size, self.obs_size))*255
     semantic_surface = rgb_to_display_surface(semantic, self.display_size)
     self.display.blit(semantic_surface, (self.display_size, 0))
 
@@ -635,6 +609,27 @@ class CarlaEnv(gym.Env):
 
     # Display on pygame
     pygame.display.flip()
+
+
+    '''
+
+    ## Birdeye rendering
+    self.birdeye_render.vehicle_polygons = self.vehicle_polygons
+    self.birdeye_render.walker_polygons = self.walker_polygons
+    self.birdeye_render.waypoints = self.waypoints
+
+    # birdeye view with roadmap and actors
+    birdeye_render_types = ['roadmap', 'actors']
+    if self.display_route:
+      birdeye_render_types.append('waypoints')
+    self.birdeye_render.render(self.display, birdeye_render_types)
+    birdeye = pygame.surfarray.array3d(self.display)
+    birdeye = birdeye[0:self.display_size, :, :]
+    birdeye = display_to_rgb(birdeye, self.obs_size)
+
+    camera = resize(self.camera_img, (self.obs_size, self.obs_size)) * 255
+    semantic = resize(self.sem_img, (self.obs_size, self.obs_size))*255
+
 
     # State observation
     ego_trans = self.ego.get_transform()
@@ -688,7 +683,6 @@ class CarlaEnv(gym.Env):
       'camera':camera.astype(np.uint8),
       'semantic':semantic.astype(np.uint8),
       'semantic_img':self.sem_img,
-      'lidar':lidar.astype(np.uint8),
       'birdeye':birdeye.astype(np.uint8),
       'state': state,
     }
@@ -703,6 +697,56 @@ class CarlaEnv(gym.Env):
 
     return obs
 
+  def show_images(self,new_semantic):
+    ## Birdeye rendering
+    self.birdeye_render.vehicle_polygons = self.vehicle_polygons
+    self.birdeye_render.walker_polygons = self.walker_polygons
+    self.birdeye_render.waypoints = self.waypoints
+
+    # birdeye view with roadmap and actors
+    birdeye_render_types = ['roadmap', 'actors']
+    if self.display_route:
+      birdeye_render_types.append('waypoints')
+    self.birdeye_render.render(self.display, birdeye_render_types)
+    birdeye = pygame.surfarray.array3d(self.display)
+    birdeye = birdeye[0:self.display_size, :, :]
+    birdeye = display_to_rgb(birdeye, self.obs_size)
+
+    # Roadmap
+    if self.pixor:
+      roadmap_render_types = ['roadmap']
+      if self.display_route:
+        roadmap_render_types.append('waypoints')
+      self.birdeye_render.render(self.display, roadmap_render_types)
+      roadmap = pygame.surfarray.array3d(self.display)
+      roadmap = roadmap[0:self.display_size, :, :]
+      roadmap = display_to_rgb(roadmap, self.obs_size)
+      # Add ego vehicle
+      for i in range(self.obs_size):
+        for j in range(self.obs_size):
+          if abs(birdeye[i, j, 0] - 255)<20 and abs(birdeye[i, j, 1] - 0)<20 and abs(birdeye[i, j, 0] - 255)<20:
+            roadmap[i, j, :] = birdeye[i, j, :]
+
+    # Display birdeye image
+    birdeye_surface = rgb_to_display_surface(birdeye, self.display_size)
+    self.display.blit(birdeye_surface, (0, 0))
+
+    
+    #add semantic display instead of Lidar
+    self.dis_semantic = new_semantic
+    semantic = resize(self.dis_semantic, (self.obs_size, self.obs_size))*255
+    semantic_surface = rgb_to_display_surface(semantic, self.display_size)
+    self.display.blit(semantic_surface, (self.display_size, 0))
+
+    ## Display camera image
+    camera = resize(self.camera_img, (self.obs_size, self.obs_size)) * 255
+    camera_surface = rgb_to_display_surface(camera, self.display_size)
+    self.display.blit(camera_surface, (self.display_size * 2, 0))
+
+
+    # Display on pygame
+    pygame.display.flip()
+
   def _get_reward(self):
     """Calculate the step reward."""
     # reward for speed tracking
@@ -713,7 +757,7 @@ class CarlaEnv(gym.Env):
     # reward for collision
     r_collision = 0
     if len(self.collision_hist) > 0:
-      return -5
+      return -20
 
     # reward for steering:
     #r_steer = -self.ego.get_control().steer**2
@@ -723,10 +767,14 @@ class CarlaEnv(gym.Env):
     dis, w = get_lane_dis(self.waypoints, ego_x, ego_y)
     r_out = 0
     # assumes centre of the vehicle being more than 0.25m off is in other lane
-    if abs(dis) > 0.25:
+    if abs(dis) > self.out_lane_thres:
+      return -20
+    elif abs(dis) > 2:
         #new reward 
-        percent_l = (abs(dis)-0.25)/1.5
-        return 1+((-5-1)*percent_l*percent_l)
+        percent_l = (abs(dis))/3
+        return 1+(((-5-1)*percent_l)*percent_l)
+    else:
+      return 1
 
     # longitudinal speed
     #lspeed = np.array([v.x, v.y])
@@ -742,8 +790,6 @@ class CarlaEnv(gym.Env):
 
     #r = 200*r_collision + 1*lspeed_lon + 10*r_fast + 1*r_out + r_steer*5 + 0.2*r_lat - 0.1
 
-    else:
-        return 1
 
   def _terminal(self):
     """Calculate whether to terminate the current episode."""
@@ -773,7 +819,7 @@ class CarlaEnv(gym.Env):
 
   def _clear_all_actors(self, actor_filters):
     """Clear specific actors."""
-    special_actors = ['sensor.lidar.raycast','controller.ai.walker']
+    special_actors = ['controller.ai.walker', 'walker.*']
     for actor_filter in actor_filters:
       for actor in self.world.get_actors().filter(actor_filter):
         if actor.is_alive:

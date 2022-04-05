@@ -86,7 +86,7 @@ class RoutePlanner():
     waypoints = self._get_waypoints()
     red_light, vehicle_front = self._get_hazard()
     # red_light = False
-    return waypoints, red_light, vehicle_front
+    return waypoints, red_light, vehicle_front, self._waypoints_queue
 
   def _get_waypoints(self):
     """
