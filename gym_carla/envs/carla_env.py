@@ -9,7 +9,9 @@ from __future__ import division
 
 from copy import deepcopy
 from copy import copy as cp
+from dis import dis
 import numpy as np
+from pkg_resources import get_default_cache
 import pygame
 import random
 import time
@@ -330,6 +332,10 @@ class CarlaEnv(gym.Env):
     # Set ego information for render
     self.birdeye_render.set_hero(self.ego, self.ego.id)
 
+    #Added for project, get furtherest away waypoint and set it to final waypoint
+    e_x, e_y = get_pos(self.ego)
+    self.final_waypoint = get_furthest_waypoint(self.waypoints,e_x,e_y)
+
     return self._get_obs()
   
   def step(self, action):
@@ -383,13 +389,19 @@ class CarlaEnv(gym.Env):
     control = self.ego.get_control()
     e_x, e_y = get_pos(self.ego)
     
+    distances = get_lane_dis(self.waypoints, e_x, e_y)
+    #update distance from final waypoint at each step
+    distance_to_last = get_distance_to_waypoint(self.final_waypoint,e_x,e_y)
+
+
     info = {
       'waypoints': self.waypoints,
       'vehicle_front': self.vehicle_front,
-      'position': get_lane_dis(self.waypoints, e_x, e_y),
+      'position': distances[0],
       'angular_vel':(angular_velocity.x,angular_velocity.y,angular_velocity.z),
       'acceleration':(acc.x,acc.y),
-      'steer':control.steer
+      'steer':control.steer,
+      'DistanceToLast': distance_to_last
     }
     
     # Update timesteps
@@ -637,8 +649,7 @@ class CarlaEnv(gym.Env):
     ego_y = ego_trans.location.y
     ego_yaw = ego_trans.rotation.yaw/180*np.pi
     lateral_dis, w = get_preview_lane_dis(self.waypoints, ego_x, ego_y)
-    delta_yaw = np.arcsin(np.cross(w, 
-      np.array(np.array([np.cos(ego_yaw), np.sin(ego_yaw)]))))
+    delta_yaw = np.arcsin(np.cross(w, np.array(np.array([np.cos(ego_yaw), np.sin(ego_yaw)]))))
     v = self.ego.get_velocity()
     speed = np.sqrt(v.x**2 + v.y**2)
     state = np.array([lateral_dis, - delta_yaw, speed, self.vehicle_front])
@@ -764,14 +775,14 @@ class CarlaEnv(gym.Env):
 
     # reward for out of lane
     ego_x, ego_y = get_pos(self.ego)
-    dis, w = get_lane_dis(self.waypoints, ego_x, ego_y)
-    r_out = 0
+    distance_waypoints = get_lane_dis(self.waypoints, ego_x, ego_y)
+    dis,_ = distance_waypoints[0]
     # assumes centre of the vehicle being more than 0.25m off is in other lane
     if abs(dis) > self.out_lane_thres:
       return -20
     elif abs(dis) > 2:
         #new reward 
-        percent_l = (abs(dis))/3
+        percent_l = (abs(dis))/self.out_lane_thres
         return 1+(((-5-1)*percent_l)*percent_l)
     else:
       return 1
@@ -811,7 +822,8 @@ class CarlaEnv(gym.Env):
           return True
 
     # If out of lane
-    dis, _ = get_lane_dis(self.waypoints, ego_x, ego_y)
+    waypoint_distance = get_lane_dis(self.waypoints, ego_x, ego_y)
+    dis,_ = waypoint_distance[0]
     if abs(dis) > self.out_lane_thres:
       return True
 

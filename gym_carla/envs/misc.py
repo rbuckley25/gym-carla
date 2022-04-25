@@ -132,18 +132,61 @@ def get_lane_dis(waypoints, x, y):
   :added - and waypoint
   """
   dis_min = 1000
-  waypt = waypoints[0]
+  dis_max = 0
+  distances = []
+  waypt = [waypoints[0],waypoints[-1]]
   for pt in waypoints:
     d = np.sqrt((x-pt[0])**2 + (y-pt[1])**2)
     if d < dis_min:
       dis_min = d
-      waypt=pt
-  vec = np.array([x - waypt[0], y - waypt[1]])
+      waypt[0]=pt
+  for points in waypt:
+    vec = np.array([x - points[0], y - points[1]])
+    lv = np.linalg.norm(np.array(vec))
+    w = np.array([np.cos(points[2]/180*np.pi), np.sin(points[2]/180*np.pi)])
+    cross = np.cross(w, vec/lv)
+    dis = - lv * cross
+    distances.append((dis,w))
+  return distances
+
+"""
+Implemented for project
+
+Gets distance from any waypoint to the ego vehicle
+:param waypoint: waypoint of form [Carla.location.x,Carla.location.y,Carla.rotation.yaw]
+:param x: x position of ego
+:param y: y position of ego
+:return: a tuple of the distance and direction to waypoint
+"""
+def get_distance_to_waypoint(waypoint,x,y):
+  vec = np.array([x - waypoint[0], y - waypoint[1]])
   lv = np.linalg.norm(np.array(vec))
-  w = np.array([np.cos(waypt[2]/180*np.pi), np.sin(waypt[2]/180*np.pi)])
+  w = np.array([np.cos(waypoint[2]/180*np.pi), np.sin(waypoint[2]/180*np.pi)])
   cross = np.cross(w, vec/lv)
   dis = - lv * cross
-  return dis, w 
+  return (dis,w)
+
+
+"""
+Implemented for project
+
+ Finds the furthest waypoint when given a list of waypoints
+:param waypoints: list of waypoints
+:param x: x position of ego
+:param y: y position of ego
+:return: waypoint of form [Carla.location.x,Carla.location.y,Carla.rotation.yaw]
+"""
+
+def get_furthest_waypoint(waypoints,x,y):
+  waypt = waypoints[-1]
+  dis_max = 0
+  for pt in waypoints:
+    d = np.sqrt((x-pt[0])**2 + (y-pt[1])**2)
+    if d > dis_max:
+        dis_max = d
+        waypt = pt
+  return waypt
+
 
 
 def get_preview_lane_dis(waypoints, x, y, idx=2):
